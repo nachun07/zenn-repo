@@ -8,7 +8,7 @@ topics:
   - ai
   - macos
   - localai
-published: false
+published: true
 ---
 
 ## はじめに
