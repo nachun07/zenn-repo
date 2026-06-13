@@ -88,7 +88,7 @@ https://ollama.ai
 または検索エンジンで「Ollama」と検索して、公式サイトを開きます。
 
 #### ステップ2：ダウンロード
-![インストール画面](image)
+![インストール画面](../images/ollama/Ollama-Download.png)
 公式サイトのダウンロードページに、「Download for macOS」ボタンがあります。クリックするだけでダウンロードが始まります。
 
 Apple Silicon（M1/M2/M3チップ）とIntel Macの判別は自動的に行われるため、手動で選択する必要はありません。
