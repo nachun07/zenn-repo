@@ -1,9 +1,9 @@
 ---
-title: "Azure Durable Functions入門｜非同期処理を「順番・並列・待機」でシンプルに書く方法"
+title: "Azure Durable Functions入門｜非同期処理を「順番・並列・待機」でシンプルに書く方法（Python編）"
 emoji: "⚡"
 slug: "azure-durable-functions-nyumon"
 type: "tech"
-topics: ["azure", "durablefunctions", "サーバーレス", "csharp", "初心者"]
+topics: ["azure", "durablefunctions", "python", "サーバーレス", "初心者"]
 published: true
 ---
 
@@ -18,7 +18,7 @@ Azure Functionsは便利ですが、1回の呼び出しごとに完結する「�
 
 こうした場面で活躍するのが「**Durable Functions**」です。Azure Functionsの拡張機能として、状態を持った処理（ステートフルなワークフロー）を、キューやDBを自前で組まずに書けるようになります。
 
-この記事では、Durable Functionsのローカル環境構築から、実際に「順次処理」「並列処理（ファンアウト・ファンイン）」「外部イベント待機」を動かすところまで、実際に試した内容をもとに詳しく説明します。難しい前提知識は不要で、記事の通りに進めていけば、Azure Functionsを触ったことがある方なら1時間程度で一通り体験できます。
+この記事では、Python版Durable Functionsのローカル環境構築から、実際に「順次処理」「並列処理（ファンアウト・ファンイン）」「外部イベント待機」を動かすところまで、実際に試した内容をもとに詳しく説明します。難しい前提知識は不要で、記事の通りに進めていけば、Pythonの非同期処理に馴染みがなくても1時間程度で一通り体験できます。
 
 ## Durable Functionsとは
 
@@ -45,7 +45,7 @@ Durable Functionsの動作を理解するうえで欠かせないのが「イベ
 ## Durable Functionsの特徴
 
 - 複数の関数呼び出しをまたいで状態を保持できる
-- 「順次処理」「並列処理」「待機」といった複雑なフローを、ほぼ同期処理のように直感的なコードで書ける
+- 「順次処理」「並列処理」「待機」といった複雑なフローを、Pythonのジェネレーター構文（`yield`）を使ってシンプルに書ける
 - リトライやタイムアウトの仕組みが標準で用意されている
 - C#、JavaScript/TypeScript、Python、PowerShell、Javaに対応している
 - ローカル開発〜Azureへのデプロイまで、通常のAzure Functionsとほぼ同じ手順で行える
@@ -58,6 +58,8 @@ Durable Functionsで使われる関数には、役割の異なる3種類があ�
 | オーケストレーター関数 | 処理全体の流れ（順番・並列・分岐）を定義する「指揮者」 |
 | アクティビティ関数 | 実際の処理（DBアクセス、API呼び出しなど）を行う「実働部隊」 |
 
+Python版では、オーケストレーター関数は`async def`ではなく、`def`＋`yield`を使ったジェネレーター関数として書くのが特徴です。これはリプレイの仕組み上、処理を一時停止・再開できる必要があるためです。
+
 ## 環境
 
 この記事で想定している環境は以下の通りです。
@@ -65,7 +67,7 @@ Durable Functionsで使われる関数には、役割の異なる3種類があ�
 | 項目 | 仕様 |
 |---|---|
 | OS | Windows / macOS / Linux（VS Codeが動く環境） |
-| ランタイム | .NET 8（分離ワーカーモデル） |
+| ランタイム | Python 3.11 |
 | エディタ | Visual Studio Code |
 | ツール | Azure Functions Core Tools、Azurite（ストレージエミュレーター） |
 | ネットワーク | パッケージ取得時に必要（実行自体はローカル完結） |
@@ -74,7 +76,7 @@ Durable Functionsは内部で「実行履歴の保存先」としてAzure Storag
 
 また、この記事の例では以下のツールを使用します。
 
-- Visual Studio Code + C# 拡張機能
+- Visual Studio Code + Python 拡張機能
 - Azure Functions Core Tools
 - Node.js（Azuriteのインストールに必要）
 - curl（動作確認用）
@@ -82,8 +84,6 @@ Durable Functionsは内部で「実行履歴の保存先」としてAzure Storag
 Node.jsがインストールされていない場合は、公式サイト（https://nodejs.org）からLTS版をダウンロードしてインストールしてください。
 
 ## インストール手順
-
-Durable Functionsの開発環境を整える方法は、大きく分けて「Azure Functions Core Toolsでプロジェクトを作る方法」と「Visual Studioのテンプレートから作る方法」の2つがあります。CLIに慣れている方には前者がおすすめです。
 
 ### ステップ1：Azure Functions Core Toolsのインストール
 
@@ -133,22 +133,32 @@ Azurite Table service is starting at http://127.0.0.1:10002
 
 ### ステップ3：プロジェクトの作成
 
-新しいフォルダを作成し、Functionsプロジェクトを初期化します。
+新しいフォルダを作成し、Pythonの仮想環境を用意してからFunctionsプロジェクトを初期化します。
 
 ```bash
 mkdir DurableFunctionsSample
 cd DurableFunctionsSample
-func init --worker-runtime dotnet-isolated
+python3 -m venv .venv
+source .venv/bin/activate   # Windowsの場合は .venv\Scripts\activate
+func init --worker-runtime python --model V2
 ```
 
-続けて、Durable Functionsの拡張パッケージを追加します。
+### ステップ4：パッケージの追加
+
+`requirements.txt`に以下を追記します。
+
+```
+azure-functions
+azure-functions-durable
+```
+
+追記したら、仮想環境内でインストールします。
 
 ```bash
-dotnet add package Microsoft.Azure.Functions.Worker.Extensions.DurableTask
-dotnet add package Microsoft.Azure.Functions.Worker.Extensions.DurableTask.AzureManaged
+pip install -r requirements.txt
 ```
 
-### ステップ4：ストレージ接続の設定確認
+### ステップ5：ストレージ接続の設定確認
 
 プロジェクト直下の`local.settings.json`が、Azuriteを見るように設定されているか確認します。
 
@@ -157,54 +167,44 @@ dotnet add package Microsoft.Azure.Functions.Worker.Extensions.DurableTask.Azure
   "IsEncrypted": false,
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated"
+    "FUNCTIONS_WORKER_RUNTIME": "python"
   }
 }
 ```
 
 `UseDevelopmentStorage=true`と書いておくだけで、先ほど起動したAzuriteに自動的に接続してくれます。これでAzureの実アカウントを用意しなくても、ローカルだけで動作確認ができる状態になりました。
 
+Python版のDurable Functions（V2プログラミングモデル）では、複数の関数を1つの`function_app.py`にまとめて、デコレーターで役割を指定していくスタイルが基本になります。この記事でもすべて`function_app.py`に追記していく形で進めます。
+
 ## 動作確認：まずは最小構成を動かす
 
 いきなり複雑なパターンに入る前に、まずは1個だけアクティビティ関数を呼ぶ最小構成で、環境が正しく動いているか確認します。
 
-`Function1.cs`を以下の内容で作成します。
+`function_app.py`を以下の内容で作成します。
 
-```csharp
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.Functions.Worker.Http;
-using Microsoft.DurableTask;
-using Microsoft.DurableTask.Client;
-using Microsoft.Extensions.Logging;
+```python
+import azure.functions as func
+import azure.durable_functions as df
 
-public static class HelloOrchestration
-{
-    [Function(nameof(HelloOrchestrator))]
-    public static async Task<string> HelloOrchestrator(
-        [OrchestrationTrigger] TaskOrchestrationContext context)
-    {
-        var result = await context.CallActivityAsync<string>(nameof(SayHello), "Osaka");
-        return result;
-    }
+app = df.DFApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-    [Function(nameof(SayHello))]
-    public static string SayHello([ActivityTrigger] string name, FunctionContext executionContext)
-    {
-        return $"こんにちは、{name}さん！";
-    }
 
-    [Function("HelloHttpStart")]
-    public static async Task<HttpResponseData> HttpStart(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequestData req,
-        [DurableClient] DurableTaskClient client,
-        FunctionContext executionContext)
-    {
-        string instanceId = await client.ScheduleNewOrchestrationInstanceAsync(
-            nameof(HelloOrchestrator));
+@app.route(route="hello_start")
+@app.durable_client_input(client_name="client")
+async def hello_http_start(req: func.HttpRequest, client: df.DurableOrchestrationClient):
+    instance_id = await client.start_new("hello_orchestrator")
+    return client.create_check_status_response(req, instance_id)
 
-        return await client.CreateCheckStatusResponseAsync(req, instanceId);
-    }
-}
+
+@app.orchestration_trigger(context_name="context")
+def hello_orchestrator(context: df.DurableOrchestrationContext):
+    result = yield context.call_activity("say_hello", "Osaka")
+    return result
+
+
+@app.activity_trigger(input_name="name")
+def say_hello(name: str) -> str:
+    return f"こんにちは、{name}さん！"
 ```
 
 プロジェクトを起動します。
@@ -218,17 +218,17 @@ func start
 ```
 Functions:
 
-        HelloHttpStart: [POST] http://localhost:7071/api/HelloHttpStart
+        hello_http_start: [GET,POST] http://localhost:7071/api/hello_start
 
-        HelloOrchestrator: orchestrationTrigger
+        hello_orchestrator: orchestrationTrigger
 
-        SayHello: activityTrigger
+        say_hello: activityTrigger
 ```
 
 別のターミナルからHTTPリクエストを送ってオーケストレーションを開始します。
 
 ```bash
-curl -X POST http://localhost:7071/api/HelloHttpStart
+curl -X POST http://localhost:7071/api/hello_start
 ```
 
 以下のようなレスポンスが返ってきます。
@@ -250,7 +250,7 @@ curl "http://localhost:7071/runtime/webhooks/durabletask/instances/abc123..."
 
 ```json
 {
-  "name": "HelloOrchestrator",
+  "name": "hello_orchestrator",
   "instanceId": "abc123...",
   "runtimeStatus": "Completed",
   "output": "こんにちは、Osakaさん！",
@@ -267,64 +267,44 @@ curl "http://localhost:7071/runtime/webhooks/durabletask/instances/abc123..."
 
 ### コード例
 
-`SequentialOrchestration.cs`を作成します。
+`function_app.py`に以下を追記します。
 
-```csharp
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.Functions.Worker.Http;
-using Microsoft.DurableTask;
-using Microsoft.DurableTask.Client;
+```python
+@app.route(route="orders/{order_id}")
+@app.durable_client_input(client_name="client")
+async def order_http_start(req: func.HttpRequest, client: df.DurableOrchestrationClient):
+    order_id = req.route_params.get("order_id")
+    instance_id = await client.start_new("process_order_orchestrator", client_input=order_id)
+    return client.create_check_status_response(req, instance_id)
 
-public static class SequentialOrchestration
-{
-    [Function(nameof(ProcessOrderOrchestrator))]
-    public static async Task<string> ProcessOrderOrchestrator(
-        [OrchestrationTrigger] TaskOrchestrationContext context)
-    {
-        var orderId = context.GetInput<string>();
 
-        var validated = await context.CallActivityAsync<bool>(nameof(ValidateOrder), orderId);
-        if (!validated)
-        {
-            return "注文内容が不正なため処理を中断しました";
-        }
+@app.orchestration_trigger(context_name="context")
+def process_order_orchestrator(context: df.DurableOrchestrationContext):
+    order_id = context.get_input()
 
-        var paymentResult = await context.CallActivityAsync<string>(nameof(ProcessPayment), orderId);
-        var shippedResult = await context.CallActivityAsync<string>(nameof(ShipOrder), paymentResult);
+    validated = yield context.call_activity("validate_order", order_id)
+    if not validated:
+        return "注文内容が不正なため処理を中断しました"
 
-        return $"注文処理完了: {shippedResult}";
-    }
+    payment_result = yield context.call_activity("process_payment", order_id)
+    shipped_result = yield context.call_activity("ship_order", payment_result)
 
-    [Function(nameof(ValidateOrder))]
-    public static bool ValidateOrder([ActivityTrigger] string orderId)
-    {
-        return true; // 実際は在庫確認などのロジックが入る
-    }
+    return f"注文処理完了: {shipped_result}"
 
-    [Function(nameof(ProcessPayment))]
-    public static string ProcessPayment([ActivityTrigger] string orderId)
-    {
-        return $"注文{orderId}の決済完了";
-    }
 
-    [Function(nameof(ShipOrder))]
-    public static string ShipOrder([ActivityTrigger] string paymentInfo)
-    {
-        return $"{paymentInfo} → 発送手配済み";
-    }
+@app.activity_trigger(input_name="order_id")
+def validate_order(order_id: str) -> bool:
+    return True  # 実際は在庫確認などのロジックが入る
 
-    [Function("OrderHttpStart")]
-    public static async Task<HttpResponseData> HttpStart(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "orders/{orderId}")] HttpRequestData req,
-        [DurableClient] DurableTaskClient client,
-        string orderId)
-    {
-        string instanceId = await client.ScheduleNewOrchestrationInstanceAsync(
-            nameof(ProcessOrderOrchestrator), orderId);
 
-        return await client.CreateCheckStatusResponseAsync(req, instanceId);
-    }
-}
+@app.activity_trigger(input_name="order_id")
+def process_payment(order_id: str) -> str:
+    return f"注文{order_id}の決済完了"
+
+
+@app.activity_trigger(input_name="payment_info")
+def ship_order(payment_info: str) -> str:
+    return f"{payment_info} → 発送手配済み"
 ```
 
 ### 動かしてみる
@@ -342,7 +322,7 @@ curl -X POST http://localhost:7071/api/orders/1001
 }
 ```
 
-`await`でつなぐだけで、あたかも普通の同期処理のように順番に書けているのがわかります。それぞれのステップの結果は自動的に保存されるため、途中でホストが再起動しても続きから再開できます。
+`yield`でつなぐだけで、あたかも普通の同期処理のように順番に書けているのがわかります。それぞれのステップの結果は自動的に保存されるため、途中でホストが再起動しても続きから再開できます。
 
 このパターンが向いているのは、EC注文処理のように「検証→決済→発送」のような、明確な順序依存があるワークフローです。
 
@@ -352,68 +332,46 @@ curl -X POST http://localhost:7071/api/orders/1001
 
 ### コード例
 
-`FanOutFanInOrchestration.cs`を作成します。
+`function_app.py`に以下を追記します。
 
-```csharp
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.Functions.Worker.Http;
-using Microsoft.DurableTask;
-using Microsoft.DurableTask.Client;
+```python
+@app.route(route="images")
+@app.durable_client_input(client_name="client")
+async def images_http_start(req: func.HttpRequest, client: df.DurableOrchestrationClient):
+    image_urls = [
+        "https://example.com/img1.jpg",
+        "https://example.com/img2.jpg",
+        "https://example.com/img3.jpg",
+    ]
+    instance_id = await client.start_new("process_images_orchestrator", client_input=image_urls)
+    return client.create_check_status_response(req, instance_id)
 
-public static class FanOutFanInOrchestration
-{
-    [Function(nameof(ProcessImagesOrchestrator))]
-    public static async Task<List<string>> ProcessImagesOrchestrator(
-        [OrchestrationTrigger] TaskOrchestrationContext context)
-    {
-        var imageUrls = context.GetInput<List<string>>();
 
-        // ファンアウト：並列でリサイズ処理を投げる
-        var tasks = new List<Task<string>>();
-        foreach (var url in imageUrls)
-        {
-            tasks.Add(context.CallActivityAsync<string>(nameof(ResizeImage), url));
-        }
+@app.orchestration_trigger(context_name="context")
+def process_images_orchestrator(context: df.DurableOrchestrationContext):
+    image_urls = context.get_input()
 
-        // ファンイン：すべての完了を待って結果をまとめる
-        var results = await Task.WhenAll(tasks);
+    # ファンアウト：並列でリサイズ処理を投げる
+    tasks = [context.call_activity("resize_image", url) for url in image_urls]
 
-        await context.CallActivityAsync(nameof(SaveThumbnailList), results.ToList());
+    # ファンイン：すべての完了を待って結果をまとめる
+    results = yield context.task_all(tasks)
 
-        return results.ToList();
-    }
+    yield context.call_activity("save_thumbnail_list", results)
 
-    [Function(nameof(ResizeImage))]
-    public static string ResizeImage([ActivityTrigger] string imageUrl)
-    {
-        // 実際はここで画像処理ライブラリなどを使ってリサイズする
-        return $"{imageUrl} -> リサイズ完了";
-    }
+    return results
 
-    [Function(nameof(SaveThumbnailList))]
-    public static void SaveThumbnailList([ActivityTrigger] List<string> results)
-    {
-        // 実際はDBやストレージへの保存処理が入る
-    }
 
-    [Function("ImagesHttpStart")]
-    public static async Task<HttpResponseData> HttpStart(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "images")] HttpRequestData req,
-        [DurableClient] DurableTaskClient client)
-    {
-        var imageUrls = new List<string>
-        {
-            "https://example.com/img1.jpg",
-            "https://example.com/img2.jpg",
-            "https://example.com/img3.jpg"
-        };
+@app.activity_trigger(input_name="image_url")
+def resize_image(image_url: str) -> str:
+    # 実際はここで画像処理ライブラリなどを使ってリサイズする
+    return f"{image_url} -> リサイズ完了"
 
-        string instanceId = await client.ScheduleNewOrchestrationInstanceAsync(
-            nameof(ProcessImagesOrchestrator), imageUrls);
 
-        return await client.CreateCheckStatusResponseAsync(req, instanceId);
-    }
-}
+@app.activity_trigger(input_name="results")
+def save_thumbnail_list(results: list) -> None:
+    # 実際はDBやストレージへの保存処理が入る
+    pass
 ```
 
 ### 動かしてみる
@@ -435,18 +393,18 @@ curl -X POST http://localhost:7071/api/images
 }
 ```
 
-もし`foreach`の中で1つずつ`await`してしまうと、意図せず直列実行になってしまいます。並列にしたい場合は、まず`Task`のリストを作ってから最後に`Task.WhenAll`でまとめて待つのがポイントです。
+もしリスト内包表記を使わず、ループの中で1つずつ`yield`してしまうと、意図せず直列実行になってしまいます。並列にしたい場合は、まず`call_activity`のタスクのリストを作ってから、最後に`context.task_all`でまとめて待つのがポイントです。
 
-```csharp
-// NG: 直列実行になってしまう
-foreach (var url in imageUrls)
-{
-    var result = await context.CallActivityAsync<string>(nameof(ResizeImage), url);
-}
+```python
+# NG: 直列実行になってしまう
+results = []
+for url in image_urls:
+    result = yield context.call_activity("resize_image", url)
+    results.append(result)
 
-// OK: 並列実行になる
-var tasks = imageUrls.Select(url => context.CallActivityAsync<string>(nameof(ResizeImage), url));
-var results = await Task.WhenAll(tasks);
+# OK: 並列実行になる
+tasks = [context.call_activity("resize_image", url) for url in image_urls]
+results = yield context.task_all(tasks)
 ```
 
 画像のリサイズや、複数店舗の在庫を一括チェックするといった、それぞれが独立していて並列化できる処理に向いています。並列数が非常に多い場合（数千件など）は、一度に全部投げるのではなく、バッチに分割して段階的に処理する方が安全です。同時実行数が多すぎるとストレージのスロットリングに引っかかることがあります。
@@ -457,68 +415,47 @@ var results = await Task.WhenAll(tasks);
 
 ### コード例
 
-`ApprovalOrchestration.cs`を作成します。
+`function_app.py`に以下を追記します。
 
-```csharp
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.Functions.Worker.Http;
-using Microsoft.DurableTask;
-using Microsoft.DurableTask.Client;
+```python
+from datetime import timedelta
 
-public static class ApprovalOrchestration
-{
-    [Function(nameof(ApprovalOrchestrator))]
-    public static async Task<string> ApprovalOrchestrator(
-        [OrchestrationTrigger] TaskOrchestrationContext context)
-    {
-        await context.CallActivityAsync(nameof(RequestApproval), null);
 
-        using var cts = new CancellationTokenSource();
-        var timeoutTask = context.CreateTimer(
-            context.CurrentUtcDateTime.AddMinutes(5), cts.Token);
-        var approvalTask = context.WaitForExternalEvent<bool>("ApprovalEvent");
+@app.route(route="approvals")
+@app.durable_client_input(client_name="client")
+async def approval_http_start(req: func.HttpRequest, client: df.DurableOrchestrationClient):
+    instance_id = await client.start_new("approval_orchestrator")
+    return client.create_check_status_response(req, instance_id)
 
-        var winner = await Task.WhenAny(approvalTask, timeoutTask);
 
-        if (winner == approvalTask && approvalTask.Result)
-        {
-            cts.Cancel();
-            return "承認されました";
-        }
+@app.route(route="approvals/{instance_id}/approve")
+@app.durable_client_input(client_name="client")
+async def approve_request(req: func.HttpRequest, client: df.DurableOrchestrationClient):
+    instance_id = req.route_params.get("instance_id")
+    await client.raise_event(instance_id, "ApprovalEvent", True)
+    return func.HttpResponse("承認イベントを送信しました", status_code=200)
 
-        return "タイムアウトまたは却下されました";
-    }
 
-    [Function(nameof(RequestApproval))]
-    public static void RequestApproval([ActivityTrigger] object input)
-    {
-        // 実際はメール送信やSlack通知などが入る
-    }
+@app.orchestration_trigger(context_name="context")
+def approval_orchestrator(context: df.DurableOrchestrationContext):
+    yield context.call_activity("request_approval", None)
 
-    [Function("ApprovalHttpStart")]
-    public static async Task<HttpResponseData> HttpStart(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "approvals")] HttpRequestData req,
-        [DurableClient] DurableTaskClient client)
-    {
-        string instanceId = await client.ScheduleNewOrchestrationInstanceAsync(
-            nameof(ApprovalOrchestrator));
+    timeout_task = context.create_timer(context.current_utc_datetime + timedelta(minutes=5))
+    approval_task = context.wait_for_external_event("ApprovalEvent")
 
-        return await client.CreateCheckStatusResponseAsync(req, instanceId);
-    }
+    winner = yield context.task_any([approval_task, timeout_task])
 
-    [Function("ApproveRequest")]
-    public static async Task<HttpResponseData> ApproveRequest(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "approvals/{instanceId}/approve")] HttpRequestData req,
-        [DurableClient] DurableTaskClient client,
-        string instanceId)
-    {
-        await client.RaiseEventAsync(instanceId, "ApprovalEvent", true);
+    if winner == approval_task and approval_task.result:
+        timeout_task.cancel()
+        return "承認されました"
 
-        var response = req.CreateResponse(System.Net.HttpStatusCode.OK);
-        await response.WriteStringAsync("承認イベントを送信しました");
-        return response;
-    }
-}
+    return "タイムアウトまたは却下されました"
+
+
+@app.activity_trigger(input_name="input")
+def request_approval(input) -> None:
+    # 実際はメール送信やSlack通知などが入る
+    pass
 ```
 
 ### 動かしてみる
@@ -561,7 +498,7 @@ curl -X POST http://localhost:7071/api/approvals/abc123.../approve
 }
 ```
 
-タイマーとイベント待機を`Task.WhenAny`で組み合わせることで、「一定時間以内に承認がなければタイムアウト」といった処理も自然に書けます。
+タイマーとイベント待機を`context.task_any`で組み合わせることで、「一定時間以内に承認がなければタイムアウト」といった処理も自然に書けます。
 
 ## オーケストレーター関数を書くときの注意点
 
@@ -569,59 +506,58 @@ curl -X POST http://localhost:7071/api/approvals/abc123.../approve
 
 ### 非決定的なコードを書かない
 
-`DateTime.Now`や`Guid.NewGuid()`、乱数などをオーケストレーター関数内で直接使ってはいけません。リプレイのたびに違う値が生成されてしまうためです。代わりに、Durable Functionsが提供する決定的なAPIを使います。
+`datetime.now()`や`uuid.uuid4()`、`random`モジュールなどをオーケストレーター関数内で直接使ってはいけません。リプレイのたびに違う値が生成されてしまうためです。代わりに、Durable Functionsが提供する決定的なAPIを使います。
 
-```csharp
-// NG: リプレイのたびに違う値になる
-var now = DateTime.Now;
-var id = Guid.NewGuid();
+```python
+# NG: リプレイのたびに違う値になる
+import datetime
+import uuid
+now = datetime.datetime.now()
+id = uuid.uuid4()
 
-// OK: 決定的な値が返る
-var now = context.CurrentUtcDateTime;
-var id = context.NewGuid();
+# OK: 決定的な値が返る
+now = context.current_utc_datetime
+id = context.new_uuid()
 ```
 
 ### I/Oを直接行わない
 
 DBアクセスやHTTP通信、ファイル操作などは、オーケストレーター関数内で直接行わず、必ずアクティビティ関数に委譲します。オーケストレーターはあくまで「流れ」を定義するだけの場所です。
 
-### `Task.Delay`ではなく`context.CreateTimer`を使う
+### `time.sleep`ではなく`context.create_timer`を使う
 
-通常の`Task.Delay`を使うと、リプレイのたびに実際に待機してしまったり、正しく永続化されなかったりします。必ず`context.CreateTimer`を使いましょう（パターン3のコード参照）。
+通常の`time.sleep`を使うと、リプレイのたびに実際に待機してしまったり、正しく永続化されなかったりします。必ず`context.create_timer`を使いましょう（パターン3のコード参照）。
+
+### async defではなくdef + yieldで書く
+
+オーケストレーター関数は通常のPythonの`async def`関数ではなく、`def`＋`yield`を使ったジェネレーター関数として書きます。これは、Durable Task Frameworkがオーケストレーターの実行を細かく制御し、リプレイを実現するための仕組みです。`async/await`はクライアント関数（HTTPトリガーなど）側で使います。
 
 ### 無限ループに注意する
 
-長時間稼働するオーケストレーションは、実行履歴がどんどん蓄積されていきます。履歴が大きくなりすぎるとパフォーマンスが劣化するため、`context.ContinueAsNew()`を使って定期的に履歴をリセットすることが推奨されています。
+長時間稼働するオーケストレーションは、実行履歴がどんどん蓄積されていきます。履歴が大きくなりすぎるとパフォーマンスが劣化するため、`context.continue_as_new()`を使って定期的に履歴をリセットすることが推奨されています。
 
 ## リトライとエラーハンドリング
 
 アクティビティ関数の呼び出しには、リトライポリシーを簡単に設定できます。
 
-```csharp
-var retryOptions = new TaskOptions(
-    new TaskRetryOptions(
-        new RetryPolicy(
-            maxNumberOfAttempts: 3,
-            firstRetryInterval: TimeSpan.FromSeconds(5))));
+```python
+from azure.durable_functions import RetryOptions
 
-var result = await context.CallActivityAsync<string>(
-    nameof(ProcessPayment), orderId, retryOptions);
+retry_options = RetryOptions(first_retry_interval_in_milliseconds=5000, max_number_of_attempts=3)
+
+result = yield context.call_activity_with_retry("process_payment", retry_options, order_id)
 ```
 
 これにより、外部APIの一時的な障害などに対して、自動的にリトライしてくれるようになります。
 
-また`try-catch`で例外をハンドリングして、途中のステップが失敗した際に前のステップを取り消す「補償トランザクション（Sagaパターン）」を書くこともできます。
+また`try-except`で例外をハンドリングして、途中のステップが失敗した際に前のステップを取り消す「補償トランザクション（Sagaパターン）」を書くこともできます。
 
-```csharp
-try
-{
-    await context.CallActivityAsync(nameof(ProcessPayment), orderId);
-}
-catch (TaskFailedException)
-{
-    await context.CallActivityAsync(nameof(CancelOrder), orderId);
-    return "決済に失敗したため注文をキャンセルしました";
-}
+```python
+try:
+    yield context.call_activity("process_payment", order_id)
+except Exception:
+    yield context.call_activity("cancel_order", order_id)
+    return "決済に失敗したため注文をキャンセルしました"
 ```
 
 ## 通常のAzure Functionsとの比較
@@ -630,12 +566,12 @@ catch (TaskFailedException)
 
 | 項目 | 自前実装（キュー+DB） | Durable Functions |
 |---|---|---|
-| 実行順序の制御 | キューの順序やロックで自前管理 | `await`を並べるだけ |
-| 並列処理と集約 | 完了カウンタなどを自前でDB管理 | `Task.WhenAll`で完結 |
+| 実行順序の制御 | キューの順序やロックで自前管理 | `yield`を並べるだけ |
+| 並列処理と集約 | 完了カウンタなどを自前でDB管理 | `context.task_all`で完結 |
 | 途中経過の永続化 | 状態テーブルを自前設計 | 自動でイベント履歴に保存 |
 | 再起動時の復旧 | 自前でリカバリロジックが必要 | リプレイで自動復旧 |
-| タイムアウト・待機 | タイマーやスケジューラを自前構築 | `CreateTimer`で標準対応 |
-| 学習コスト | 低い（普通の非同期処理の知識で足りる） | オーケストレーターの制約を覚える必要あり |
+| タイムアウト・待機 | タイマーやスケジューラを自前構築 | `create_timer`で標準対応 |
+| 学習コスト | 低い（普通の非同期処理の知識で足りる） | オーケストレーターの制約や`yield`構文を覚える必要あり |
 | ローカル開発 | 特に制約なし | Azuriteのセットアップが必要 |
 
 ## メリット・デメリット
@@ -643,21 +579,21 @@ catch (TaskFailedException)
 ### Durable Functionsのメリット
 
 **複雑なフローをシンプルなコードで表現できる**
-順次処理・並列処理・待機処理といった複雑な非同期フローを、`await`と`Task.WhenAll`、`Task.WhenAny`を組み合わせるだけで、あたかも同期処理のように書けます。キューやステートストアを自前で設計する必要がありません。
+順次処理・並列処理・待機処理といった複雑な非同期フローを、`yield`と`context.task_all`、`context.task_any`を組み合わせるだけで、あたかも同期処理のように書けます。キューやステートストアを自前で設計する必要がありません。
 
 **状態管理を意識しなくていい**
 実行履歴が自動的に保存されるため、途中でホストが再起動してもゼロからやり直しになりません。長時間実行される処理でも安心して書けます。
 
 **リトライやタイムアウトが標準機能として使える**
-`RetryPolicy`や`CreateTimer`など、実務でよく必要になる機能が最初から用意されています。
+`RetryOptions`や`create_timer`など、実務でよく必要になる機能が最初から用意されています。
 
 **通常のAzure Functionsの知識がそのまま活きる**
-アクティビティ関数やクライアント関数は、通常のAzure Functionsとほぼ同じ書き方です。トリガーの種類も普段と同じものが使えます。
+アクティビティ関数やクライアント関数は、通常のPython版Azure Functionsとほぼ同じ書き方です。トリガーの種類も普段と同じものが使えます。
 
 ### Durable Functionsのデメリット
 
 **オーケストレーター関数特有の制約がある**
-「非決定的なコードを書けない」「I/Oを直接行えない」といったルールがあり、慣れるまでは戸惑うポイントです。
+「非決定的なコードを書けない」「I/Oを直接行えない」「`async def`ではなく`yield`を使う」といったルールがあり、慣れるまでは戸惑うポイントです。特にPythonに慣れているほど、`async/await`ではなく`yield`を使う独特の書き方に最初は違和感を覚えるかもしれません。
 
 **ローカル開発にAzuriteが必要**
 通常のAzure Functionsよりも、ローカル環境のセットアップに一手間かかります。
@@ -670,15 +606,15 @@ Azureにデプロイする場合、通常のAzure Functionsの実行時間課金
 
 ## 実際に使ってみて
 
-実際にローカル環境（Azurite + Functions Core Tools）で、上記3つのパターンをすべて動かしてみました。
+実際にローカル環境（Azurite + Functions Core Tools + Python）で、上記3つのパターンをすべて動かしてみました。
 
-順次処理は最も直感的で、普段async/awaitを書いている感覚のまま実装できました。特に迷うポイントはなく、すぐに動作確認まで進められました。
+順次処理は最も直感的で、`yield`を使うことさえ覚えてしまえば、普段の同期処理を書いている感覚のまま実装できました。特に迷うポイントはなく、すぐに動作確認まで進められました。
 
-ファンアウト・ファンインは、最初`foreach`の中でうっかり`await`してしまい、並列になっていないことに気づかず少し時間を溶かしました。`Task.WhenAll`を使う書き方に慣れれば、そのあとは問題なく書けるようになりました。
+ファンアウト・ファンインは、最初リスト内包表記を使わずループの中で`yield`してしまい、並列になっていないことに気づかず少し時間を溶かしました。`context.task_all`にタスクのリストをまとめて渡す書き方に慣れれば、そのあとは問題なく書けるようになりました。
 
 外部イベント待機は、`curl`でイベントを手動送信するテストがやや手間でしたが、実際のプロダクトでは承認ボタンを押した先でこのAPIを叩く形になるとイメージすると、業務フローへの応用がしやすいと感じました。
 
-全体を通して、オーケストレーター関数のルール（非決定的な処理を書かない、I/Oを直接行わない）さえ最初に押さえてしまえば、あとはコードの見通しの良さに驚くはずです。特にファンアウト・ファンインは、自前実装だと状態管理だけでかなりのコード量になる処理が、数行で書けてしまうのが体感できました。
+全体を通して、Pythonの通常の非同期処理（`async/await`）に慣れていると、オーケストレーター関数だけ`def`＋`yield`で書くことに最初は戸惑いましたが、「オーケストレーターの中だけは特別なルールがある」と割り切ってしまえば、あとはコードの見通しの良さに驚くはずです。特にファンアウト・ファンインは、自前実装だと状態管理だけでかなりのコード量になる処理が、数行で書けてしまうのが体感できました。
 
 一方で、ローカルでのデバッグ体験は通常のAzure Functionsよりも一段階複雑で、Azuriteの起動を忘れて「なぜかストレージに接続できない」というエラーに何度か遭遇しました。作業を始める前にAzuriteが起動しているか確認する癖をつけておくと、無駄なつまずきを減らせると思います。
 
@@ -686,13 +622,13 @@ Azureにデプロイする場合、通常のAzure Functionsの実行時間課金
 
 本記事で説明した内容をまとめます。
 
-- 環境構築：Functions Core Tools + Azuriteでローカル完結の開発環境が作れる
-- 順次処理：`await`を並べるだけで、複数のアクティビティを順番に実行できる
-- 並列処理（ファンアウト・ファンイン）：`Task.WhenAll`で並列実行と結果集約がシンプルに書ける
-- 外部イベント待機：`WaitForExternalEvent`と`CreateTimer`の組み合わせで、承認待ちのようなフローも書ける
-- 注意点：オーケストレーター関数には「非決定的な処理禁止」「I/O禁止」などの制約がある
+- 環境構築：Functions Core Tools + Azurite + Pythonの仮想環境でローカル完結の開発環境が作れる
+- 順次処理：`yield`を並べるだけで、複数のアクティビティを順番に実行できる
+- 並列処理（ファンアウト・ファンイン）：`context.task_all`で並列実行と結果集約がシンプルに書ける
+- 外部イベント待機：`wait_for_external_event`と`create_timer`の組み合わせで、承認待ちのようなフローも書ける
+- 注意点：オーケストレーター関数には「非決定的な処理禁止」「I/O禁止」「`async def`ではなく`yield`」などの制約がある
 
-Durable Functionsを使うことで、複雑な非同期処理のフローを、自前でキューやステートストアを組まずに、シンプルなコードで実現できます。最初はオーケストレーター関数特有のルールに戸惑うかもしれませんが、一度慣れてしまえば非常に強力な武器になってくれるはずです。
+Durable Functionsを使うことで、複雑な非同期処理のフローを、自前でキューやステートストアを組まずに、シンプルなコードで実現できます。Pythonの通常の非同期処理とは書き方が異なる部分に最初は戸惑うかもしれませんが、一度慣れてしまえば非常に強力な武器になってくれるはずです。
 
 次回は実際にAzureにデプロイして、Application Insightsと組み合わせて監視するところまで試してみたいと思います。
 
