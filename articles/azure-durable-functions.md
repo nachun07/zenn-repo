@@ -4,7 +4,7 @@ emoji: "⚡"
 slug: "azure-durable-functions-nyumon"
 type: "tech"
 topics: ["azure", "durablefunctions", "python", "サーバーレス", "初心者"]
-published: true
+published: false
 ---
 
 ## はじめに
@@ -18,7 +18,7 @@ Azure Functionsは便利ですが、1回の呼び出しごとに完結する「�
 
 こうした場面で活躍するのが「**Durable Functions**」です。Azure Functionsの拡張機能として、状態を持った処理（ステートフルなワークフロー）を、キューやDBを自前で組まずに書けるようになります。
 
-この記事では、Python版Durable Functionsのローカル環境構築から、実際に「順次処理」「並列処理（ファンアウト・ファンイン）」「外部イベント待機」を動かすところまで、実際に試した内容をもとに詳しく説明します。難しい前提知識は不要で、記事の通りに進めていけば、Pythonの非同期処理に馴染みがなくても1時間程度で一通り体験できます。
+この記事では、Python版Durable Functionsのローカル環境構築から、実際に「順次処理」「並列処理（ファンアウト・ファンイン）」「外部イベント待機」「マルチエージェントオーケストレーション」を動かすところまで、実際に試した内容をもとに詳しく説明します。難しい前提知識は不要で、記事の通りに進めていけば、Pythonの非同期処理に馴染みがなくても1時間程度で一通り体験できます。
 
 ## Durable Functionsとは
 
@@ -500,6 +500,131 @@ curl -X POST http://localhost:7071/api/approvals/abc123.../approve
 
 タイマーとイベント待機を`context.task_any`で組み合わせることで、「一定時間以内に承認がなければタイムアウト」といった処理も自然に書けます。
 
+## パターン4：マルチエージェントオーケストレーション
+
+近年、Durable Functionsは複数のAIエージェント（LLM呼び出し）を組み合わせる「マルチエージェントオーケストレーション」の基盤としても使われるようになっています。プロンプトチェイニングによる関数連鎖や、ファンアウト・ファンインによる並列化といった代表的なエージェントパターンを、これまで紹介してきたDurable Functionsのプログラミングモデルでそのまま実装できます。
+
+### なぜDurable FunctionsがAIエージェントに向いているのか
+
+LLM呼び出しは、通常のAPI呼び出しに比べて時間がかかり、レート制限やタイムアウトで失敗することも珍しくありません。複数のLLM呼び出しやツール実行、エージェント間のハンドオフを含む複雑なワークフローになるほど、途中で失敗する可能性は高くなります。
+
+自前でリトライやチェックポイントの仕組みを組み込んでいない場合、30分かかった処理が1つのエージェント呼び出しの失敗によって最初からやり直しになってしまう、といった事態が起こり得ます。Durable Functionsを使うと、各エージェント呼び出しやツール呼び出しが自動的にチェックポイントされる耐久性のある操作として実行されるため、失敗した箇所から処理を再開でき、それまでに消費したLLMのトークンや処理時間を無駄にしません。
+
+具体的には、以下のような特性がマルチエージェント構成と相性が良いポイントです。
+
+- **チェックポイントによる再開性**: 個々のエージェント呼び出しをアクティビティ関数として実装すれば、途中で失敗しても最初からやり直す必要がない
+- **ファンアウト・ファンインで並列化**: 複数の専門エージェントに同時に問い合わせて、結果をまとめて集約できる
+- **外部イベント待機との組み合わせ**: エージェントの提案に対する人間の承認を挟む「Human-in-the-loop」も自然に実現できる
+- **決定的なオーケストレーション**: どのエージェントをどの順番で呼んだかが実行履歴として残るため、デバッグや監査がしやすい
+
+### コード例：複数の専門エージェントを並列に呼び出す
+
+ここでは、1つのメインエージェントが調査を行った後、その結果を複数の翻訳エージェントに同時に渡して、並列に多言語へ翻訳するシンプルな例を紹介します。実際のLLM呼び出し部分は、Azure OpenAIなど任意のクライアントに置き換えて考えてください。
+
+`function_app.py`に以下を追記します。
+
+```python
+@app.route(route="agent_workflow")
+@app.durable_client_input(client_name="client")
+async def agent_workflow_http_start(req: func.HttpRequest, client: df.DurableOrchestrationClient):
+    question = req.params.get("question", "Durable Functionsとは何ですか？")
+    instance_id = await client.start_new("agent_orchestration_workflow", client_input=question)
+    return client.create_check_status_response(req, instance_id)
+
+
+@app.orchestration_trigger(context_name="context")
+def agent_orchestration_workflow(context: df.DurableOrchestrationContext):
+    question = context.get_input()
+
+    # 1. まずメインエージェントに調査・回答を行わせる（順次処理）
+    answer = yield context.call_activity("call_research_agent", question)
+
+    # 2. その結果を複数の翻訳エージェントに並列で渡す（ファンアウト）
+    target_languages = ["en", "zh", "ko"]
+    translation_tasks = [
+        context.call_activity("call_translation_agent", {"text": answer, "lang": lang})
+        for lang in target_languages
+    ]
+
+    # 3. すべての翻訳結果を集約する（ファンイン）
+    translations = yield context.task_all(translation_tasks)
+
+    return {
+        "question": question,
+        "answer": answer,
+        "translations": dict(zip(target_languages, translations)),
+    }
+
+
+@app.activity_trigger(input_name="question")
+def call_research_agent(question: str) -> str:
+    # 実際はここでAzure OpenAIなどのLLMクライアントを呼び出す
+    # response = openai_client.chat.completions.create(...)
+    return f"「{question}」についての調査結果（ダミー応答）"
+
+
+@app.activity_trigger(input_name="params")
+def call_translation_agent(params: dict) -> str:
+    text = params["text"]
+    lang = params["lang"]
+    # 実際はここで翻訳専用エージェント（LLM）を呼び出す
+    return f"[{lang}] {text}"
+```
+
+### 動かしてみる
+
+```bash
+curl -X POST "http://localhost:7071/api/agent_workflow?question=Durable+Functionsとは"
+```
+
+ステータス確認用URLにアクセスすると、メインエージェントの回答と、3言語分の翻訳結果がまとまって返ってきます。
+
+```json
+{
+  "runtimeStatus": "Completed",
+  "output": {
+    "question": "Durable Functionsとは",
+    "answer": "「Durable Functionsとは」についての調査結果（ダミー応答）",
+    "translations": {
+      "en": "[en] 「Durable Functionsとは」についての調査結果（ダミー応答）",
+      "zh": "[zh] 「Durable Functionsとは」についての調査結果（ダミー応答）",
+      "ko": "[ko] 「Durable Functionsとは」についての調査結果（ダミー応答）"
+    }
+  }
+}
+```
+
+この例のように、「メインエージェントの実行（順次処理）→複数の専門エージェントへの並列委譲（ファンアウト・ファンイン）→結果の集約」という流れを、これまで紹介したパターンの組み合わせだけで表現できます。エージェントの数が増えても、`target_languages`のリストに追加するだけで並列度を増やせる点も、通常のファンアウト・ファンインパターンと同じ感覚です。
+
+### Human-in-the-loopとの組み合わせ
+
+マルチエージェント構成では、エージェントが生成した計画やアウトプットを、実行前に人間がレビューしたいケースもよくあります。これは人間の承認を待つDurable Functionsのパターンと組み合わせることで、承認待ちの間に障害が発生してもオーケストレーションが失われず、承認が得られた時点から処理を再開できます。実装は、パターン3で紹介した`wait_for_external_event`を、エージェントによる計画立案のアクティビティ関数の後に挟むだけです。
+
+```python
+@app.orchestration_trigger(context_name="context")
+def travel_plan_orchestrator(context: df.DurableOrchestrationContext):
+    request = context.get_input()
+
+    # エージェントに旅行プランを提案させる
+    plan = yield context.call_activity("call_planner_agent", request)
+
+    # 人間の承認を待つ
+    approved = yield context.wait_for_external_event("PlanApproved")
+
+    if not approved:
+        return "プランが却下されました"
+
+    # 承認後、予約エージェントに処理を委譲する
+    booking_result = yield context.call_activity("call_booking_agent", plan)
+    return booking_result
+```
+
+### 本格的に使う場合は専用の拡張機能もある
+
+ここで紹介したのは、各エージェント呼び出しを単純なアクティビティ関数として実装する、最もシンプルな構成です。より本格的にマルチエージェントシステムを構築する場合、Microsoftは**Microsoft Agent Framework向けのDurable拡張機能**を提供しています。この拡張機能は、エージェントのセッション永続化、オーケストレーションやワークフローの進捗のチェックポイント、失敗からの自動復旧、分散ホストへのスケーリングを、エージェント側のロジックを変更せずに実現します。
+
+エージェントごとに会話履歴を保持する永続セッション、複数の専門エージェントを決定的なワークフローの中で自動チェックポイント付きで調整するマルチエージェントオーケストレーション、人間の承認や長時間の待機に対応する長期実行ワークフローといった機能が用意されており、Azure Functions上でのサーバーレスホスティングにも対応しています。今回のようにまず自前のアクティビティ関数でパターンを理解したうえで、本番運用ではこうした専用拡張機能への移行を検討するとよいでしょう。
+
 ## オーケストレーター関数を書くときの注意点
 
 先ほど触れた「リプレイ」の仕組みがあるため、オーケストレーター関数にはいくつか守るべき制約があります。これを破ると、リプレイのたびに結果が変わってしまい、意図しない動作やエラーにつながります。
@@ -606,13 +731,15 @@ Azureにデプロイする場合、通常のAzure Functionsの実行時間課金
 
 ## 実際に使ってみて
 
-実際にローカル環境（Azurite + Functions Core Tools + Python）で、上記3つのパターンをすべて動かしてみました。
+実際にローカル環境（Azurite + Functions Core Tools + Python）で、上記4つのパターンをすべて動かしてみました。
 
 順次処理は最も直感的で、`yield`を使うことさえ覚えてしまえば、普段の同期処理を書いている感覚のまま実装できました。特に迷うポイントはなく、すぐに動作確認まで進められました。
 
 ファンアウト・ファンインは、最初リスト内包表記を使わずループの中で`yield`してしまい、並列になっていないことに気づかず少し時間を溶かしました。`context.task_all`にタスクのリストをまとめて渡す書き方に慣れれば、そのあとは問題なく書けるようになりました。
 
 外部イベント待機は、`curl`でイベントを手動送信するテストがやや手間でしたが、実際のプロダクトでは承認ボタンを押した先でこのAPIを叩く形になるとイメージすると、業務フローへの応用がしやすいと感じました。
+
+マルチエージェントオーケストレーションは、既存の順次処理・ファンアウト/ファンイン・外部イベント待機のパターンをそのまま組み合わせられる点が最大の発見でした。「エージェント呼び出し＝アクティビティ関数」と割り切れば、新しい概念をほとんど覚える必要がなく、既存のワークフロー資産をそのままLLM時代の構成に転用できると実感しました。
 
 全体を通して、Pythonの通常の非同期処理（`async/await`）に慣れていると、オーケストレーター関数だけ`def`＋`yield`で書くことに最初は戸惑いましたが、「オーケストレーターの中だけは特別なルールがある」と割り切ってしまえば、あとはコードの見通しの良さに驚くはずです。特にファンアウト・ファンインは、自前実装だと状態管理だけでかなりのコード量になる処理が、数行で書けてしまうのが体感できました。
 
@@ -626,9 +753,10 @@ Azureにデプロイする場合、通常のAzure Functionsの実行時間課金
 - 順次処理：`yield`を並べるだけで、複数のアクティビティを順番に実行できる
 - 並列処理（ファンアウト・ファンイン）：`context.task_all`で並列実行と結果集約がシンプルに書ける
 - 外部イベント待機：`wait_for_external_event`と`create_timer`の組み合わせで、承認待ちのようなフローも書ける
+- マルチエージェントオーケストレーション：エージェント呼び出しをアクティビティ関数として実装すれば、順次処理・ファンアウト/ファンイン・外部イベント待機の各パターンをそのまま組み合わせて、耐久性のあるマルチエージェントワークフローを構築できる
 - 注意点：オーケストレーター関数には「非決定的な処理禁止」「I/O禁止」「`async def`ではなく`yield`」などの制約がある
 
-Durable Functionsを使うことで、複雑な非同期処理のフローを、自前でキューやステートストアを組まずに、シンプルなコードで実現できます。Pythonの通常の非同期処理とは書き方が異なる部分に最初は戸惑うかもしれませんが、一度慣れてしまえば非常に強力な武器になってくれるはずです。
+Durable Functionsを使うことで、複雑な非同期処理のフローを、自前でキューやステートストアを組まずに、シンプルなコードで実現できます。Pythonの通常の非同期処理とは書き方が異なる部分に最初は戸惑うかもしれませんが、一度慣れてしまえば非常に強力な武器になってくれるはずです。マルチエージェント構成のように新しいユースケースが増えても、既存のパターンの組み合わせで対応できるのも大きな魅力です。
 
 次回は実際にAzureにデプロイして、Application Insightsと組み合わせて監視するところまで試してみたいと思います。
 
