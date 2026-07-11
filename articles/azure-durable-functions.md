@@ -4,7 +4,7 @@ emoji: "⚡"
 slug: "azure-durable-functions-nyumon"
 type: "tech"
 topics: ["azure", "durablefunctions", "python", "サーバーレス", "初心者"]
-published: false
+published: true
 ---
 
 ## はじめに
