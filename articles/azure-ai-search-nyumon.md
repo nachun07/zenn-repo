@@ -3,7 +3,7 @@ title: "Azure AI Search入門 〜検索の基本からベクトル検索・RAG�
 emoji: "🔍"
 type: "tech"
 topics: ["azure", "azureaisearch", "search", "openai", "rag"]
-published: false
+published: true
 ---
 
 # はじめに
