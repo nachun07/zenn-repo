@@ -1,7 +1,7 @@
 ---
 title: "AIを勉強するのに役立つサイト100選（2026年版）"
 emoji: "🤖"
-type: "tech"
+type: "idea"
 topics: ["ai", "機械学習", "生成ai", "llm", "まとめ"]
 published: true
 ---
